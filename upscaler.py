@@ -1,8 +1,10 @@
 import json
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
+from multiprocessing import Process
 from multiprocessing.dummy import Pool
 from pathlib import Path
 from typing import Optional, Tuple
@@ -38,6 +40,33 @@ GPUS = [
     Gpu("Nvidia 980", 0, 0.22, None),
     Gpu("AMD 5700xt", 1, 0.38, None),
 ]
+
+
+def _poll_progress(expected_frame_count: int, png_output_path: Path) -> None:
+
+    previous_frame_count = 0
+    completed_frame_count = 0
+    while completed_frame_count != expected_frame_count:
+        completed_frame_count = len([file.stem for file in png_output_path.iterdir() if "png" in file.suffix])
+        completion_percentage = (100.0 / expected_frame_count) * completed_frame_count
+        completion_percentage = round(completion_percentage, 2)
+
+        rendering_fps = abs(completed_frame_count - previous_frame_count)
+        if rendering_fps > 0:
+            seconds_per_frame = round(1.0 / rendering_fps, 3)
+            previous_frame_count = completed_frame_count
+
+            eta = (expected_frame_count - completed_frame_count) * seconds_per_frame
+            mm, ss = divmod(eta, 60)
+            hh, mm = divmod(mm, 60)
+            eta = "%d:%02d:%02d" % (hh, mm, ss)
+
+            sys.stdout.write("\r")
+            sys.stdout.write(
+                f"progress: {completion_percentage}%, rendering at {rendering_fps}fps ({seconds_per_frame}s per frame) ETA: {eta}        "
+            )
+            sys.stdout.write("\r")
+        time.sleep(1)
 
 
 def _upscale_media_on_gpu(args: Tuple[Path, Path, AiModel, Gpu, int, Optional[int]]) -> None:
@@ -153,7 +182,7 @@ def _stitch_audio_from_original(original_media: Path, output_png_dir: Path, new_
         new_media_path.as_posix(),
     ]
 
-    subprocess.run(cmds, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(cmds)
 
     mm, ss = divmod(time.time() - start_time, 60)
     hh, mm = divmod(mm, 60)
@@ -224,7 +253,7 @@ def upscale_media(media_path: Path, output_path: Path, ai_model: AiModel) -> Non
             print(f"skipping work for gpu. allotment: {adjusted_gpu_frame_allotment_count}")
             continue
 
-        if adjusted_gpu_frame_allotment_count != gpu_start_frame:
+        if adjusted_gpu_frame_allotment_count != gpu_frame_allotment_count:
             print(
                 f"{gpu}: adjusting start from {gpu_start_frame} to {adjusted_gpu_start_frame}. Was {gpu_frame_allotment_count}, now getting {adjusted_gpu_frame_allotment_count}"
             )
@@ -244,9 +273,24 @@ def upscale_media(media_path: Path, output_path: Path, ai_model: AiModel) -> Non
         )
     print(f"going to render {planned_render_count}({planned_render_count * ai_model.output_fps_increase}) frames")
 
+    # Start up a process that will print the overall progress of the work (across of gpus)
+    p = Process(
+        target=_poll_progress,
+        args=(
+            planned_render_count * ai_model.output_fps_increase,
+            png_output_dir,
+        ),
+    )
+    p.start()
+
     # Start upscaling
     with Pool(processes=len(thread_work_args)) as pool:
         pool.map(_upscale_media_on_gpu, thread_work_args)
+
+    # Terminate the progress tracker if it has not already killed itself
+    if p.is_alive():
+        p.terminate()
+
     print("upscaling complete")
 
     # Build the pngs into the final media file
@@ -255,12 +299,12 @@ def upscale_media(media_path: Path, output_path: Path, ai_model: AiModel) -> Non
 
 if __name__ == "__main__":
 
-    input_path = Path("//DESKTOP-0TN2T9A/g/Video/MONK/s01/disk01/title_t02.mkv")
+    input_path = Path("//DESKTOP-0TN2T9A/g/Video/MONK/s01/disk02/title_t00.mkv")
     if not input_path.exists():
         raise RuntimeError("Failed to find input file")
 
-    output_path = Path("g:/monk_s01e03.mkv")
-    # if output_path.exists():
-    #     shutil.rmtree(output_path.as_posix(), ignore_errors=True)
+    output_path = Path("g:/monk_s01e04.mkv")
+    if output_path.exists():
+        shutil.rmtree(output_path.as_posix(), ignore_errors=True)
 
     upscale_media(input_path, output_path, ai_model=AI_MODEL_DIONE_INTERLACED_ROBUST)
