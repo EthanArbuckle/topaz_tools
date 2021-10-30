@@ -7,6 +7,8 @@ from multiprocessing.dummy import Pool
 from pathlib import Path
 from typing import Optional, Tuple
 
+from stream_indexer import determine_stream_indexes
+
 
 @dataclass
 class AiModel:
@@ -27,7 +29,7 @@ class Gpu:
 
     def __str__(self) -> str:
         origin = "remote" if self.remote_host else "local"
-        return f"[({origin}) {self.name}]"
+        return f"[{origin} {self.name}]"
 
 
 GPUS = [
@@ -36,36 +38,6 @@ GPUS = [
     Gpu("Nvidia 980", 0, 0.22, None),
     Gpu("AMD 5700xt", 1, 0.38, None),
 ]
-
-
-def _stream_index_from_ffmpeg_output(output: bytes) -> str:
-    """Get the stream index from a ffpmeg output line"""
-    # input: Stream #0:2(und): Video: h264
-    # output: 0:2
-    return output.split(b"#")[1].split(b"(")[0].decode("utf-8")[0:3]
-
-
-def determine_stream_indexes(file_location: Path) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Given a media file, locate the indexes of the individual streams"""
-    audio_stream, video_stream, subtitle_stream = None, None, None
-    try:
-        # Print information about the provided media file
-        subprocess.check_output(["ffmpeg.exe", "-i", file_location.as_posix()], stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as error:
-        for ffpmeg_output in error.stderr.splitlines():
-            if b"Stream" not in ffpmeg_output:
-                # We're only interested in info about the track's streams
-                continue
-            # A stream was found, carve out the index (for map operation)
-            stream_index = _stream_index_from_ffmpeg_output(ffpmeg_output)
-            # Identify what kind of stream this is
-            if b"Subtitle" in ffpmeg_output:
-                subtitle_stream = stream_index
-            elif b"Video" in ffpmeg_output:
-                video_stream = stream_index
-            elif b"Audio" in ffpmeg_output:
-                audio_stream = stream_index
-    return audio_stream, video_stream, subtitle_stream
 
 
 def _upscale_media_on_gpu(args: Tuple[Path, Path, AiModel, Gpu, int, Optional[int]]) -> None:
@@ -135,9 +107,6 @@ def _stitch_audio_from_original(original_media: Path, output_png_dir: Path, new_
 
     start_time = time.time()
 
-    if new_media_path.exists():
-        raise RuntimeError("Save dst already exists")
-
     # Figure out where the streams are located within the original track
     audio_stream, _, subtitle_stream = determine_stream_indexes(original_media)
     if not audio_stream:
@@ -150,6 +119,8 @@ def _stitch_audio_from_original(original_media: Path, output_png_dir: Path, new_
         "-f",
         # Input 1 is the pngs
         "image2",
+        "-thread_queue_size",
+        "512",
         "-i",
         f"{output_png_dir.as_posix()}/%06d.png",
         # Input 2 is the original media
@@ -168,20 +139,20 @@ def _stitch_audio_from_original(original_media: Path, output_png_dir: Path, new_
         cmds += ["-map", f"1:{subtitle_stream[-1]}", "-scodec", "copy"]
 
     cmds += [
-        # h264 encode the video output
+        # h264 encode the video output.
+        # Use AMD hardware encoding
         "-vcodec",
-        "libx264",
+        "hevc_amf",
         # Preserve audio codec (but maybe it should be ac3 for ps4?)
         "-acodec",
         "copy",
         "-crf",
-        "25",
+        "18",
         "-pix_fmt",
         "yuv420p",
-        "-threads",
-        "28",
         new_media_path.as_posix(),
     ]
+
     subprocess.run(cmds, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     mm, ss = divmod(time.time() - start_time, 60)
@@ -289,7 +260,7 @@ if __name__ == "__main__":
         raise RuntimeError("Failed to find input file")
 
     output_path = Path("g:/monk_s01e03.mkv")
-    if output_path.exists():
-        shutil.rmtree(output_path.as_posix(), ignore_errors=True)
+    # if output_path.exists():
+    #     shutil.rmtree(output_path.as_posix(), ignore_errors=True)
 
     upscale_media(input_path, output_path, ai_model=AI_MODEL_DIONE_INTERLACED_ROBUST)
