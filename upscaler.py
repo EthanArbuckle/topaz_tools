@@ -75,9 +75,8 @@ def _poll_progress(gpus: List[Gpu]) -> None:
     total_completed_frames = 0
     last_pass_total_completed_frames = 0
 
-    time.sleep(5)
-
-    while total_completed_frames < total_expected_frames and all([gpu.active for gpu in gpus]):
+    time.sleep(1)
+    while total_completed_frames < total_expected_frames and any([gpu.active for gpu in gpus]):
         for gpu in gpu_progress_jobs:
 
             gpu.completed_frame_count = len(
@@ -122,7 +121,7 @@ def _upscale_media_on_gpu(args: Tuple[Path, AiModel, Gpu, int, Optional[int]]) -
     media_path, ai_model, gpu, gpu_start_frame, gpu_end_frame = args
 
     if not gpu.png_output_dir or not gpu.png_output_dir.exists():
-        raise RuntimeError(f"Invalid png output path for {gpu}: {gpu.png_output_dir.as_posix()}")
+        raise RuntimeError(f"Invalid png output path for {gpu}")
 
     start_time = time.time()
     gpu.active = True
@@ -172,10 +171,10 @@ def _upscale_media_on_gpu(args: Tuple[Path, AiModel, Gpu, int, Optional[int]]) -
 
     proc = subprocess.Popen(cmds, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     while True and proc.stderr:
-        output = proc.stderr.readline()
+        output = proc.stdout.readline() or proc.stderr.readline()
         if not output:
             break
-        # print(output.decode("utf-8"))
+        print(output.decode("utf-8"))
     proc.wait()
     gpu.active = False
 
@@ -352,7 +351,10 @@ def upscale_media(
         if not gpu.png_output_dir:
             continue
         for frame in gpu.png_output_dir.glob("*.png"):
-            shutil.move(frame.as_posix(), upscaled_png_dir.as_posix())
+            try:
+                shutil.move(frame.as_posix(), upscaled_png_dir.as_posix())
+            except shutil.Error as e:
+                print(f"failed to move file {frame.as_posix()}: {e}")
 
     # Build the pngs into the final media file
     _build_final_media(media_path, upscaled_png_dir, output_path, fps * ai_model.output_fps_increase)
