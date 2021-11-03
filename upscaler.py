@@ -1,6 +1,7 @@
 import json
 import shutil
 import subprocess
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -171,10 +172,10 @@ def _upscale_media_on_gpu(args: Tuple[Path, AiModel, Gpu, int, Optional[int]]) -
 
     proc = subprocess.Popen(cmds, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     while True and proc.stderr:
-        output = proc.stdout.readline() or proc.stderr.readline()
+        output = proc.stderr.readline() or proc.stdout.readline()
         if not output:
             break
-        print(output.decode("utf-8"))
+        # print(output.decode("utf-8"))
     proc.wait()
     gpu.active = False
 
@@ -196,13 +197,13 @@ def _build_final_media(original_media: Path, output_png_dir: Path, new_media_pat
 
     cmds = [
         "ffmpeg",
-        "-r",
-        str(fps),
         "-f",
         # Input 1 is the pngs
         "image2",
         "-thread_queue_size",
-        "512",
+        str(8192 * 4),
+        "-r",
+        str(fps),
         "-i",
         f"{output_png_dir.as_posix()}/%06d.png",
         # Input 2 is the original media
@@ -229,7 +230,7 @@ def _build_final_media(original_media: Path, output_png_dir: Path, new_media_pat
         "-acodec",
         "copy",
         "-crf",
-        "18",
+        "0",
         "-pix_fmt",
         "yuv420p",
         new_media_path.as_posix(),
@@ -285,32 +286,35 @@ def upscale_media(
     working_frame_index = 0
     planned_render_count = 0
     for gpu_index, gpu in enumerate(gpus):
-        # Determine how many frames this GPU will render
-        gpu_frame_allotment_count = int(float(total_frame_count) * gpu.work_allotment)
+
+        # Create the output dir for the GPUs rendered frames.
+        # Each GPU has its own folder to enable tracking the render speed of each one
+        sanitized_gpu_name = gpu.name.replace(" ", "_")
+        gpu.png_output_dir = upscaled_png_dir / f"{gpu_index}_{sanitized_gpu_name}"
+        if not gpu.png_output_dir.exists():
+            gpu.png_output_dir.mkdir()
+
         # Calculate the start and end frames this GPU will render
+        gpu_frame_allotment_count = int(float(total_frame_count) * gpu.work_allotment)
         gpu_start_frame = working_frame_index
         gpu_end_frame = gpu_start_frame + gpu_frame_allotment_count
         working_frame_index += gpu_frame_allotment_count
 
         # Handle existing frames
-        adjusted_gpu_start_frame = gpu_start_frame
-        for frame_index in range(gpu_start_frame, gpu_end_frame):
-            padded_frame_index = str(frame_index * ai_model.output_fps_increase).zfill(6)
-            if padded_frame_index not in existing_frames:
-                break
-            adjusted_gpu_start_frame += 1
+        existing_frames = sorted(
+            [file.stem for file in gpu.png_output_dir.iterdir() if "png" in file.suffix], reverse=True
+        )
+        if len(existing_frames) > 0:
+            last_rendered_frame = int(existing_frames[0]) / ai_model.output_fps_increase
+            if last_rendered_frame > gpu_end_frame:
+                print(f"{gpu} output directory already contains all the expected frames")
+                continue
+            # Move the starting frame up to right before the last found frame on disk.
+            # The overlap is in case the last rendered png is malformed due to a topaz crash
+            gpu_start_frame = int(last_rendered_frame) - 2
+            gpu_frame_allotment_count = gpu_end_frame - gpu_start_frame
 
-        adjusted_gpu_frame_allotment_count = gpu_end_frame - adjusted_gpu_start_frame
-        if adjusted_gpu_frame_allotment_count <= 0:
-            # Already done
-            print(f"skipping work for gpu. allotment: {adjusted_gpu_frame_allotment_count}")
-            continue
-
-        if adjusted_gpu_frame_allotment_count != gpu_frame_allotment_count:
-            print(
-                f"{gpu}: adjusting start from {gpu_start_frame} to {adjusted_gpu_start_frame}. Was {gpu_frame_allotment_count}, now getting {adjusted_gpu_frame_allotment_count}"
-            )
-        gpu.expected_frame_render_count = adjusted_gpu_frame_allotment_count * ai_model.output_fps_increase
+        gpu.expected_frame_render_count = gpu_frame_allotment_count * ai_model.output_fps_increase
 
         # The calculated framecount doesn't always match Topaz's (because they're inaccurate), and Topaz throws an error if endFrame > totalFrames.
         # To mitigate, the last GPU does not have an explicit end frame.
@@ -320,41 +324,43 @@ def upscale_media(
         if gpu_index == len(gpus) - 1:
             adjusted_gpu_end_frame = None
 
-        planned_render_count += adjusted_gpu_frame_allotment_count
-        print(f"{gpu} getting {adjusted_gpu_frame_allotment_count} frames ({adjusted_gpu_start_frame}-{gpu_end_frame})")
+        planned_render_count += gpu_frame_allotment_count
+        print(f"{gpu} getting {gpu.expected_frame_render_count} frames ({gpu_start_frame}-{gpu_end_frame})")
 
-        # Create the output dir for the GPUs rendered frames.
-        # Each GPU has its own folder to enable tracking the render speed of each one
-        if not gpu.png_output_dir:
-            sanitized_gpu_name = gpu.name.replace(" ", "_")
-            gpu.png_output_dir = upscaled_png_dir / f"{gpu_index}_{sanitized_gpu_name}"
-        if not gpu.png_output_dir.exists():
-            gpu.png_output_dir.mkdir()
-
-        thread_work_args.append((media_path, ai_model, gpu, adjusted_gpu_start_frame, adjusted_gpu_end_frame))
+        thread_work_args.append((media_path, ai_model, gpu, gpu_start_frame, adjusted_gpu_end_frame))
     print(f"going to render {planned_render_count}({planned_render_count * ai_model.output_fps_increase}) frames")
 
-    # Start up a process that will print the overall progress of the work (across of gpus)
-    p = Thread(
-        target=_poll_progress,
-        args=(gpus,),
-    )
-    p.start()
-
     # Start upscaling
-    with Pool(processes=len(thread_work_args)) as pool:
-        pool.map(_upscale_media_on_gpu, thread_work_args)
-    print("upscaling complete")
+    if thread_work_args:
+        # Start up a process that will print the overall progress of the work (across of gpus)
+        p = Thread(
+            target=_poll_progress,
+            args=(gpus,),
+        )
+        p.start()
+
+        with Pool(processes=len(thread_work_args)) as pool:
+            pool.map(_upscale_media_on_gpu, thread_work_args)
+        print("upscaling complete")
 
     # Merge all the pngs together for ffmpeg
+    print(f"moving pngs...")
+    start_time = time.time()
     for gpu in gpus:
         if not gpu.png_output_dir:
             continue
+
         for frame in gpu.png_output_dir.glob("*.png"):
             try:
-                shutil.move(frame.as_posix(), upscaled_png_dir.as_posix())
+                new_frame_path = upscaled_png_dir / frame.name
+                shutil.move(frame.as_posix(), new_frame_path.as_posix())
             except shutil.Error as e:
                 print(f"failed to move file {frame.as_posix()}: {e}")
+
+    mm, ss = divmod(time.time() - start_time, 60)
+    hh, mm = divmod(mm, 60)
+    duration = "%d:%02d:%02d" % (hh, mm, ss)
+    print(f"finished moving pngs in {duration}")
 
     # Build the pngs into the final media file
     _build_final_media(media_path, upscaled_png_dir, output_path, fps * ai_model.output_fps_increase)
@@ -368,5 +374,18 @@ def perform_job(upscaling_job: UpscalingJob, gpus: List[Gpu]) -> None:
     output_path = Path(upscaling_job.destination_file)
     upscaled_png_path = Path(upscaling_job.png_output_dir) / f"topaz_{output_path.stem}"
     upscale_media(input_path, output_path, upscaling_job.ai_model, upscaled_png_path, gpus)
+
     if output_path.exists():
-        shutil.rmtree(upscaled_png_path.as_posix(), ignore_errors=True)
+        start_time = time.time()
+
+        cmd_path = os.path.join(
+            os.environ["SYSTEMROOT"] if "SYSTEMROOT" in os.environ else r"C:\Windows", "System32", "cmd.exe"
+        )
+        delete_path = os.path.abspath(upscaled_png_path.as_posix()).replace("/", "\\")
+        args = [cmd_path, "/C", "rmdir", "/S", "/Q", f"{delete_path}"]
+        subprocess.check_call(args, env={})
+
+        mm, ss = divmod(time.time() - start_time, 60)
+        hh, mm = divmod(mm, 60)
+        duration = "%d:%02d:%02d" % (hh, mm, ss)
+        print(f"finished deleting pngs in {duration}")
