@@ -1,45 +1,10 @@
-import queue
+import os
 import subprocess
 import time
-from multiprocessing import Queue
-from pathlib import Path
-from threading import Event, Thread
-from dataclasses import dataclass
-from stream_indexer import determine_stream_indexes
-import os
 
-
-@dataclass
-class PngEncodingJob:
-    original_media_path: Path
-    output_png_dir: Path
-    new_media_path: Path
-    output_fps: float
-
-
-class QueueWorker(Thread):
-    def __init__(self, queue=None):
-        Thread.__init__(self)
-
-        self.daemon = True
-        self.exit = Event()
-
-        if not queue:
-            queue = Queue()
-        self.queue = queue
-
-    def run(self) -> None:
-        while not self.exit.is_set():
-            try:
-                data = self.queue.get()
-                self.process_work(data)
-            except Exception as e:
-                print(e)
-                continue
-
-
-    def process_work(self, encoding_job):
-        pass
+from upscaler.common.models import PngEncodingJob
+from upscaler.common.stream_indexer import determine_stream_indexes
+from upscaler.workers.queue_worker import QueueWorker
 
 
 class PngBuilderWorker(QueueWorker):
@@ -49,7 +14,7 @@ class PngBuilderWorker(QueueWorker):
         start_time = time.time()
 
         # Figure out where the streams are located within the original track
-        audio_stream, _, subtitle_stream = determine_stream_indexes(encoding_job.original_media_path)
+        audio_stream, _, subtitle_stream = determine_stream_indexes(encoding_job.source_media_path)
         if not audio_stream:
             raise RuntimeError("Failed to find audio stream")
 
@@ -63,10 +28,10 @@ class PngBuilderWorker(QueueWorker):
             "-r",
             str(encoding_job.output_fps),
             "-i",
-            f"{encoding_job.output_png_dir.as_posix()}/%06d.png",
+            f"{encoding_job.png_output_path_root.as_posix()}/%06d.png",
             # Input 2 is the original media
             "-i",
-            encoding_job.original_media_path.as_posix(),
+            encoding_job.source_media_path.as_posix(),
             # Map the video stream from input1
             "-map",
             "0:0",
@@ -91,7 +56,7 @@ class PngBuilderWorker(QueueWorker):
             "0",
             "-pix_fmt",
             "yuv420p",
-            encoding_job.new_media_path.as_posix(),
+            encoding_job.output_media_path.as_posix(),
         ]
 
         try:
@@ -102,15 +67,14 @@ class PngBuilderWorker(QueueWorker):
             duration = "%d:%02d:%02d" % (hh, mm, ss)
             print(f"finished encoding in {duration}")
 
-            if encoding_job.new_media_path.exists():
+            if encoding_job.output_media_path.exists():
                 start_time = time.time()
 
                 cmd_path = os.path.join(
                     os.environ["SYSTEMROOT"] if "SYSTEMROOT" in os.environ else r"C:\Windows", "System32", "cmd.exe"
                 )
-                delete_path = os.path.abspath(encoding_job.output_png_dir.as_posix()).replace("/", "\\")
+                delete_path = os.path.abspath(encoding_job.png_output_path_root.as_posix()).replace("/", "\\")
                 args = [cmd_path, "/C", "rmdir", "/S", "/Q", f"{delete_path}"]
-                print(args)
                 subprocess.run(args, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
 
                 mm, ss = divmod(time.time() - start_time, 60)
