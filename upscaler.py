@@ -41,6 +41,7 @@ class Gpu:
     remote_host: Optional[str]
     png_output_dir: Optional[Path] = None
     expected_frame_render_count: int = 0
+    rough_expected_frame_render_count: int = 0
     active: bool = False
 
     def __str__(self) -> str:
@@ -61,8 +62,7 @@ class GpuJobProgress:
 
     def __str__(self) -> str:
         rounded_fps = round(self.rendering_fps, 2)
-        rounded_spf = round(self.rendering_spf, 2)
-        return f"{self.gpu_name} {rounded_fps}fps/{rounded_spf}spf"
+        return f"{self.gpu_name} {rounded_fps}fps"
 
 
 def _poll_progress(gpus: List[Gpu]) -> None:
@@ -109,10 +109,12 @@ def _poll_progress(gpus: List[Gpu]) -> None:
 
         last_pass_total_completed_frames = total_completed_frames
 
-        gpus_progress_string = ", ".join([str(gpu) for gpu in gpu_progress_jobs])
+        gpus_progress_string = ", ".join(
+            [str(gpu) for gpu in gpu_progress_jobs if gpu.completed_frame_count < gpu.expected_frame_count]
+        )
         sys.stdout.write("\r")
         sys.stdout.write(
-            f"progress: {completion_percentage}%, rendering at {overall_render_fps}fps ({overall_render_spf}s per frame) ETA: {formatted_eta}. gpus: {gpus_progress_string}      "
+            f"{completion_percentage}%, {overall_render_fps}fps {overall_render_spf}spf ETA: {formatted_eta}. {gpus_progress_string}    "
         )
         sys.stdout.write("\r")
         time.sleep(1)
@@ -170,77 +172,19 @@ def _upscale_media_on_gpu(args: Tuple[Path, AiModel, Gpu, int, Optional[int]]) -
     else:
         cmds = ["C:/Program Files/Topaz Labs LLC/Topaz Video Enhance AI 2.3/veai.exe"] + cmds
 
-    proc = subprocess.Popen(cmds, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    while True and proc.stderr:
-        output = proc.stderr.readline() or proc.stdout.readline()
-        if not output:
-            break
-        # print(output.decode("utf-8"))
+    proc = subprocess.Popen(cmds, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+    # while True and proc.stderr:
+    #     output = proc.stderr.readline()
+    #     if not output:
+    #         break
+    # print(output.decode("utf-8"))
     proc.wait()
-    gpu.active = False
-
     mm, ss = divmod(time.time() - start_time, 60)
     hh, mm = divmod(mm, 60)
     duration = "%d:%02d:%02d" % (hh, mm, ss)
     print(f"{gpu} finished in {duration}")
 
-
-def _build_final_media(original_media: Path, output_png_dir: Path, new_media_path: Path, fps: float) -> None:
-    """Merge the audio and subtitles from the original media with the new upscaled pngs to produce the final media file"""
-
-    start_time = time.time()
-
-    # Figure out where the streams are located within the original track
-    audio_stream, _, subtitle_stream = determine_stream_indexes(original_media)
-    if not audio_stream:
-        raise RuntimeError("Failed to find audio stream")
-
-    cmds = [
-        "ffmpeg",
-        "-f",
-        # Input 1 is the pngs
-        "image2",
-        "-thread_queue_size",
-        str(8192 * 4),
-        "-r",
-        str(fps),
-        "-i",
-        f"{output_png_dir.as_posix()}/%06d.png",
-        # Input 2 is the original media
-        "-i",
-        original_media.as_posix(),
-        # Map the video stream from input1
-        "-map",
-        "0:0",
-        # Map the audio from the original media
-        "-map",
-        f"1:{audio_stream[-1]}",
-    ]
-
-    # Map subtitles if they were found in the original media
-    if subtitle_stream:
-        cmds += ["-map", f"1:{subtitle_stream[-1]}", "-scodec", "copy"]
-
-    cmds += [
-        # h264 encode the video output.
-        # Use AMD hardware encoding
-        "-vcodec",
-        "hevc_amf",
-        # Preserve audio codec (but maybe it should be ac3 for ps4?)
-        "-acodec",
-        "copy",
-        "-crf",
-        "0",
-        "-pix_fmt",
-        "yuv420p",
-        new_media_path.as_posix(),
-    ]
-    subprocess.run(cmds)
-
-    mm, ss = divmod(time.time() - start_time, 60)
-    hh, mm = divmod(mm, 60)
-    duration = "%d:%02d:%02d" % (hh, mm, ss)
-    print(f"finished encoding in {duration}")
+    gpu.active = False
 
 
 def upscale_media(
@@ -323,6 +267,7 @@ def upscale_media(
         adjusted_gpu_end_frame: Optional[int] = gpu_end_frame
         if gpu_index == len(gpus) - 1:
             adjusted_gpu_end_frame = None
+            gpu.expected_frame_render_count = total_frame_count - gpu_start_frame
 
         planned_render_count += gpu_frame_allotment_count
         print(f"{gpu} getting {gpu.expected_frame_render_count} frames ({gpu_start_frame}-{gpu_end_frame})")
@@ -337,11 +282,26 @@ def upscale_media(
             target=_poll_progress,
             args=(gpus,),
         )
+        p.daemon = True
         p.start()
 
         with Pool(processes=len(thread_work_args)) as pool:
             pool.map(_upscale_media_on_gpu, thread_work_args)
         print("upscaling complete")
+
+    # Verify the frames were created as expected
+    for gpu in gpus:
+
+        rendered_frames = []
+        if gpu.png_output_dir and gpu.png_output_dir.exists():
+            rendered_frames = sorted(
+                [file.stem for file in gpu.png_output_dir.iterdir() if "png" in file.suffix], reverse=True
+            )
+        if gpu.expected_frame_render_count > len(rendered_frames):
+            print(
+                f"GPU did not render the expected amount of frames. Expected {gpu.expected_frame_render_count} but found {len(rendered_frames)}"
+            )
+            raise RuntimeError()
 
     # Merge all the pngs together for ffmpeg
     print(f"moving pngs...")
@@ -362,30 +322,13 @@ def upscale_media(
     duration = "%d:%02d:%02d" % (hh, mm, ss)
     print(f"finished moving pngs in {duration}")
 
-    # Build the pngs into the final media file
-    _build_final_media(media_path, upscaled_png_dir, output_path, fps * ai_model.output_fps_increase)
-
 
 def perform_job(upscaling_job: UpscalingJob, gpus: List[Gpu]) -> None:
     input_path = Path(upscaling_job.source_file)
     if not input_path.exists():
         raise RuntimeError("Failed to find input file")
 
+    print(f"starting on: {input_path.as_posix()}")
     output_path = Path(upscaling_job.destination_file)
-    upscaled_png_path = Path(upscaling_job.png_output_dir) / f"topaz_{output_path.stem}"
-    upscale_media(input_path, output_path, upscaling_job.ai_model, upscaled_png_path, gpus)
-
-    if output_path.exists():
-        start_time = time.time()
-
-        cmd_path = os.path.join(
-            os.environ["SYSTEMROOT"] if "SYSTEMROOT" in os.environ else r"C:\Windows", "System32", "cmd.exe"
-        )
-        delete_path = os.path.abspath(upscaled_png_path.as_posix()).replace("/", "\\")
-        args = [cmd_path, "/C", "rmdir", "/S", "/Q", f"{delete_path}"]
-        subprocess.check_call(args, env={})
-
-        mm, ss = divmod(time.time() - start_time, 60)
-        hh, mm = divmod(mm, 60)
-        duration = "%d:%02d:%02d" % (hh, mm, ss)
-        print(f"finished deleting pngs in {duration}")
+    upscaling_job.png_output_dir = Path(upscaling_job.png_output_dir) / f"topaz_{output_path.stem}"
+    upscale_media(input_path, output_path, upscaling_job.ai_model, upscaling_job.png_output_dir, gpus)
