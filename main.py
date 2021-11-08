@@ -43,11 +43,13 @@ def launch():
     png_encode_worker.start()
 
     job = MediaUpscaleJob(
-        source_media_path=Path("g:/iPod.mp4"),
-        output_media_path=Path("t:/test1.mkv"),
+        source_media_path=Path("g:/Video/MONK/s01/disk04/title_t04.mkv"),
+        output_media_path=Path("t:/monk_s01_extra_01.mkv"),
         png_output_path_root=Path("t:/"),
         ai_model=AI_MODEL_ARTEMIS_MEDIUM_QUALITY_V12,
-        output_scale=2.0,
+        output_scale=2.25,
+        chunk_size=250,
+        job_start_time=0.0,  # TODO
     )
     media_upscale_queue.put(job)
 

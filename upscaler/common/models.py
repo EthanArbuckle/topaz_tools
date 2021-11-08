@@ -14,8 +14,6 @@ class Gpu:
     name: str
     cuda_index: int
     remote_host: Optional[str] = None
-    # expected_frame_render_count: int = 0
-    # rough_expected_frame_render_count: int = 0
 
     def __str__(self) -> str:
         origin = "remote" if self.remote_host else "local"
@@ -26,6 +24,7 @@ class Gpu:
 class TopazUpscaleJob:
     source_media_path: Path
     output_media_path: Path
+    job_start_time: float
 
 
 @dataclass
@@ -44,6 +43,7 @@ class MediaUpscaleJob(TopazUpscaleJob):
     png_output_path_root: Path
     ai_model: AiModel
     output_scale: float
+    chunk_size: int = 250
 
 
 @dataclass

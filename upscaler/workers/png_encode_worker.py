@@ -11,7 +11,7 @@ class PngBuilderWorker(QueueWorker):
     def process_work(self, encoding_job: PngEncodingJob) -> None:
         """Merge the audio and subtitles from the original media with the new upscaled pngs to produce the final media file"""
 
-        start_time = time.time()
+        encoding_start_time = time.time()
 
         # Figure out where the streams are located within the original track
         audio_stream, _, subtitle_stream = determine_stream_indexes(encoding_job.source_media_path)
@@ -62,7 +62,7 @@ class PngBuilderWorker(QueueWorker):
         try:
             subprocess.run(cmds, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
 
-            mm, ss = divmod(time.time() - start_time, 60)
+            mm, ss = divmod(time.time() - encoding_start_time, 60)
             hh, mm = divmod(mm, 60)
             duration = "%d:%02d:%02d" % (hh, mm, ss)
             print(f"finished encoding in {duration}")
@@ -81,6 +81,12 @@ class PngBuilderWorker(QueueWorker):
                 hh, mm = divmod(mm, 60)
                 duration = "%d:%02d:%02d" % (hh, mm, ss)
                 print(f"finished deleting pngs in {duration}")
+
+                mm, ss = divmod(time.time() - encoding_job.job_start_time, 60)
+                hh, mm = divmod(mm, 60)
+                duration = "%d:%02d:%02d" % (hh, mm, ss)
+                print(f"Total job duration: {duration}")
+
         except Exception as e:
             print(e)
             pass

@@ -1,5 +1,6 @@
 import json
 import subprocess
+import time
 from multiprocessing import Queue
 
 from upscaler.common.models import FrameUpscalingJob, MediaUpscaleJob
@@ -18,6 +19,7 @@ class MediaUpscaleWorker(QueueWorker):
             return
 
         print(f"starting on {encoding_job.source_media_path}")
+        encoding_job.job_start_time = time.time()
 
         png_output_path = encoding_job.png_output_path_root / f"topaz_{encoding_job.output_media_path.stem}"
         if not png_output_path.exists():
@@ -53,8 +55,7 @@ class MediaUpscaleWorker(QueueWorker):
         )
 
         frames = list(range(0, total_frame_count))
-        gpu_frame_chunk_size = 500
-        frame_chunks = [frames[i : i + gpu_frame_chunk_size] for i in range(0, len(frames), gpu_frame_chunk_size)]
+        frame_chunks = [frames[i : i + encoding_job.chunk_size] for i in range(0, len(frames), encoding_job.chunk_size)]
 
         for chunk_idx, chunk in enumerate(frame_chunks):
             chunk_png_output_path = png_output_path / str(chunk_idx)
@@ -63,6 +64,7 @@ class MediaUpscaleWorker(QueueWorker):
                 FrameUpscalingJob(
                     source_media_path=encoding_job.source_media_path,
                     output_media_path=encoding_job.output_media_path,
+                    job_start_time=encoding_job.job_start_time,
                     png_output_path=chunk_png_output_path,
                     start_frame=chunk[0],
                     end_frame=end_frame,

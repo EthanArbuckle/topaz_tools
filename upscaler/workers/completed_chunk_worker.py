@@ -40,6 +40,7 @@ class CompletedChunkWorker(QueueWorker):
                 PngEncodingJob(
                     source_media_path=completed_chunk.source_media_path,
                     output_media_path=completed_chunk.output_media_path,
+                    job_start_time=completed_chunk.job_start_time,
                     png_output_path_root=root_png_output_path,
                     output_fps=completed_chunk.output_fps,
                 )

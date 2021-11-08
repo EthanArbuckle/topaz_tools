@@ -73,6 +73,7 @@ class FrameUpscaleWorker(QueueWorker):
             CompletedChunk(
                 source_media_path=encoding_job.source_media_path,
                 output_media_path=encoding_job.output_media_path,
+                job_start_time=encoding_job.job_start_time,
                 chunk_png_output_path=encoding_job.png_output_path,
                 total_chunk_count=encoding_job.total_chunk_count,
                 output_fps=encoding_job.output_fps,
