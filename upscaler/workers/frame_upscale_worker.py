@@ -1,15 +1,17 @@
 import subprocess
+import time
 from multiprocessing import Queue
 
-from upscaler.common.models import CompletedChunk, FrameUpscalingJob, Gpu
+from upscaler.common.models import CompletedChunk, FrameUpscalingJob, Gpu, GpuProgressEvent
 from upscaler.workers.queue_worker import QueueWorker
 
 
 class FrameUpscaleWorker(QueueWorker):
-    def __init__(self, frame_upscale_queue: Queue, completed_chunk_queue: Queue, gpu: Gpu):
+    def __init__(self, frame_upscale_queue: Queue, completed_chunk_queue: Queue, render_speed_queue: Queue, gpu: Gpu):
         super().__init__(queue=frame_upscale_queue)
         self.gpu = gpu
         self.completed_chunk_queue = completed_chunk_queue
+        self.render_speed_queue = render_speed_queue
 
     def process_work(self, encoding_job: FrameUpscalingJob) -> None:
 
@@ -62,12 +64,27 @@ class FrameUpscaleWorker(QueueWorker):
             cmds = ["C:/Program Files/Topaz Labs LLC/Topaz Video Enhance AI 2.3/veai.exe"] + cmds
 
         proc = subprocess.Popen(cmds, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+
         # while True and proc.stderr:
         #     output = proc.stderr.readline()
         #     if not output:
         #         break
         # print(output.decode("utf-8"))
-        proc.wait()
+        # proc.wait()
+
+        last_pass_number_of_frames_rendered = 0
+        while proc.poll() is None:
+            number_of_frames_rendered = len(
+                [file for file in encoding_job.png_output_path.iterdir() if "png" in file.suffix]
+            )
+
+            fps = number_of_frames_rendered - last_pass_number_of_frames_rendered
+            last_pass_number_of_frames_rendered = number_of_frames_rendered
+            end_frame = encoding_job.end_frame or 1000
+            self.render_speed_queue.put(
+                GpuProgressEvent(self.gpu, fps, number_of_frames_rendered, end_frame - encoding_job.start_frame)
+            )
+            time.sleep(1)
 
         self.completed_chunk_queue.put(
             CompletedChunk(

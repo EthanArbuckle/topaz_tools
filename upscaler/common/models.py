@@ -19,6 +19,9 @@ class Gpu:
         origin = "remote" if self.remote_host else "local"
         return f"[{origin} {self.name}]"
 
+    def __hash__(self) -> int:
+        return hash(str(self))
+
 
 @dataclass
 class TopazUpscaleJob:
@@ -57,3 +60,16 @@ class CompletedChunk(TopazUpscaleJob):
 class PngEncodingJob(TopazUpscaleJob):
     png_output_path_root: Path
     output_fps: float
+
+
+@dataclass
+class ProgressEvent:
+    pass
+
+
+@dataclass
+class GpuProgressEvent(ProgressEvent):
+    gpu: Gpu
+    fps: float
+    completed_frames: int
+    expected_frames: int

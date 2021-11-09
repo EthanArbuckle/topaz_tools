@@ -71,6 +71,6 @@ class MediaUpscaleWorker(QueueWorker):
                     ai_model=encoding_job.ai_model,
                     output_scale=encoding_job.output_scale,
                     total_chunk_count=len(frame_chunks),
-                    output_fps=fps,
+                    output_fps=fps * encoding_job.ai_model.output_fps_increase,
                 )
             )
