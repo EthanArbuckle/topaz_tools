@@ -73,3 +73,4 @@ class GpuProgressEvent(ProgressEvent):
     fps: float
     completed_frames: int
     expected_frames: int
+    job: FrameUpscalingJob
