@@ -20,6 +20,10 @@ class PngBuilderWorker(QueueWorker):
 
         cmds = [
             "ffmpeg",
+            "-hwaccel",
+            "cuda",
+            "-hwaccel_output_format",
+            "cuda",
             "-f",
             # Input 1 is the pngs
             "image2",
@@ -46,14 +50,11 @@ class PngBuilderWorker(QueueWorker):
 
         cmds += [
             # h264 encode the video output.
-            # Use AMD hardware encoding
             "-vcodec",
-            "hevc_amf",
+            "h264_nvenc",
             # Preserve audio codec (but maybe it should be ac3 for ps4?)
             "-acodec",
             "copy",
-            "-crf",
-            "0",
             "-pix_fmt",
             "yuv420p",
             encoding_job.output_media_path.as_posix(),
