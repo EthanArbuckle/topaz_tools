@@ -21,7 +21,7 @@ class CompletedChunkWorker(QueueWorker):
         chunk_collection = self.chunks[completed_chunk.source_media_path]
         chunk_collection.append(completed_chunk)
 
-        print(f"recieved chunk {len(chunk_collection)} of {completed_chunk.total_chunk_count}")
+        print(f"received chunk {len(chunk_collection)} of {completed_chunk.total_chunk_count}\t")
         if completed_chunk.total_chunk_count == len(chunk_collection):
             # Move png chunks into the root png directory
             root_png_output_path = completed_chunk.chunk_png_output_path.parent
@@ -33,7 +33,7 @@ class CompletedChunkWorker(QueueWorker):
                         new_frame_path = root_png_output_path / png_frame.name
                         shutil.move(png_frame.as_posix(), new_frame_path.as_posix())
                     except shutil.Error as e:
-                        print(f"failed to move file {png_frame.as_posix()}: {e}")
+                        print(f"failed to move file {png_frame.as_posix()}: {e}\t")
 
             # Start building the final output file
             self.png_encode_queue.put(
@@ -45,3 +45,6 @@ class CompletedChunkWorker(QueueWorker):
                     output_fps=completed_chunk.output_fps,
                 )
             )
+
+            # Clear the cached chunks
+            del self.chunks[completed_chunk.source_media_path]
