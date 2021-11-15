@@ -1,8 +1,10 @@
 import json
+import math
 import subprocess
 import time
 from multiprocessing import Queue
 
+import psutil
 from upscaler.common.models import FrameUpscalingJob, MediaUpscaleJob
 from upscaler.workers.queue_worker import QueueWorker
 
@@ -18,7 +20,14 @@ class MediaUpscaleWorker(QueueWorker):
             print(f"input file does not exist: {encoding_job.source_media_path}")
             return
 
-        print(f"starting on {encoding_job.source_media_path}")
+        # Make sure there is at least 250gb free space on the png output drive.
+        # Due to slow encoding speeds, there may be multiple previous jobs waiting
+        # in the encoder queue.
+        free_space_gb = psutil.disk_usage(encoding_job.png_output_path_root.parts[0]).free / math.pow(1024, 3)
+        while free_space_gb < 250:
+            print(f"waiting for disk space to free up. Currently available: {free_space_gb}")
+            time.sleep(60)
+
         encoding_job.job_start_time = time.time()
 
         png_output_path = encoding_job.png_output_path_root / f"topaz_{encoding_job.output_media_path.stem}"
